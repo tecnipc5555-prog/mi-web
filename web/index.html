@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Control de Cobros, Egresos y Google Drive</title>
+    <!-- Tailwind CSS para diseño moderno -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- SDKs de Google API e Identity Services para Google Drive -->
+    <script src="https://apis.google.com/js/api.js" async defer></script>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <style>
+        @media print {
+            body * { visibility: hidden; }
+            #printable-area, #printable-area * { visibility: visible; }
+            #printable-area { position: absolute; left: 0; top: 0; width: 100%; }
+            .no-print { display: none !important; }
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 font-sans min-h-screen">
+
+    <!-- PANTALLA DE ACCESO DE USUARIOS (LOGIN) -->
+    <div id="login-overlay" class="fixed inset-0 bg-slate-900 bg-opacity-90 z-50 flex items-center justify-center p-4">
+        <div class="bg-white p-8 rounded-2xl shadow-2xl max-w-md w-full border border-slate-200">
+            <div class="text-center mb-6">
+                <span class="text-4xl">🔐</span>
+                <h2 class="text-2xl font-bold text-slate-800 mt-2">Control de Acceso</h2>
+                <p class="text-xs text-slate-500 mt-1">Seleccione su usuario autorizado e introduzca su clave.</p>
+            </div>
+            <form onsubmit="iniciarSesion(event)" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">Usuario Autorizado</label>
+                    <select id="login-usuario-idx" class="w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 bg-slate-50 text-sm">
+                        <!-- Se llena dinámicamente -->
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">Clave de Acceso</label>
+                    <input type="password" id="login-password" required placeholder="••••••••" class="w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-sm">
+                </div>
+                <button type="submit" class="w-full bg-indigo-700 text-white py-3 rounded-xl font-medium hover:bg-indigo-800 transition shadow-md">Ingresar al Sistema</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Encabezado y Navegación principal -->
+    <header class="bg-indigo-700 text-white shadow-md no-print">
+        <div class="max-w-7xl mx-auto px-4 py-4 flex flex-col md:flex-row justify-between items-center">
+            <div class="flex items-center gap-3">
+                <h1 class="text-2xl font-bold flex items-center gap-2">💰 Sistema Financiero de Cobros</h1>
+                <span id="badge-usuario-activo" class="bg-indigo-900 text-xs px-2.5 py-1 rounded-full border border-indigo-500 font-mono">Usuario: -</span>
+            </div>
+            <nav class="flex gap-2 mt-4 md:mt-0 flex-wrap items-center">
+                <button onclick="switchTab('cobros')" class="tab-btn bg-indigo-900 px-3 py-2 rounded-lg text-sm font-medium hover:bg-indigo-600 transition">Cobros</button>
+                <button onclick="switchTab('estado-cuenta')" class="tab-btn px-3 py-2 rounded-lg text-sm font-medium hover:bg-indigo-600 transition">Estado de Cuenta</button>
+                <button onclick="switchTab('egresos')" class="tab-btn px-3 py-2 rounded-lg text-sm font-medium hover:bg-indigo-600 transition">Egresos / Caja</button>
+                <button onclick="switchTab('reportes')" class="tab-btn px-3 py-2 rounded-lg text-sm font-medium hover:bg-indigo-600 transition">Reportes</button>
+                <button onclick="switchTab('config')" class="tab-btn px-3 py-2 rounded-lg text-sm font-medium hover:bg-indigo-600 transition">Configuración</button>
+                <button onclick="cerrarSesion()" class="bg-rose-600 px-3 py-2 rounded-lg text-sm font-medium hover:bg-rose-700 transition ml-2">Salir</button>
+            </nav>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-4 py-8">
+
+        <!-- Barra de Estado de Sincronización en la Nube (Google Drive) -->
+        <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200 mb-6 flex flex-col sm:flex-row justify-between items-center gap-4 no-print">
+            <div class="flex items-center gap-3">
+                <span id="drive-status-icon" class="text-2xl">☁️</span>
+                <div>
+                    <p class="font-medium text-slate-800" id="drive-status-text">Sincronización Nube (Google Drive)</p>
+                    <p class="text-xs text-slate-500" id="drive-user-text">Estado: Almacenamiento Local Activo | Moneda activa: <strong id="moneda-activa-tag">Q (GTQ)</strong></p>
+                </div>
+            </div>
+            <div class="flex gap-2">
+                <button id="btn-connect-drive" onclick="autenticarGoogleDrive()" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition">Conectar Google Drive</button>
+                <button id="btn-sync-drive" onclick="sincronizarConDrive()" class="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-emerald-700 transition hidden">☁️ Respaldar en Google Drive</button>
+            </div>
+        </div>
+
+        <!-- SECCIÓN 1: REGISTRO DE COBROS Y COMPROBANTE -->
+        <section id="tab-cobros" class="tab-content space-y-6">
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <!-- Formulario de Cobro -->
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                    <h2 class="text-xl font-semibold mb-4 text-indigo-700">Registrar Nuevo Cobro</h2>
+                    <form id="form-cobro" onsubmit="registrarCobro(event)" class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-slate-700">Nombre de la Persona</label>
+                            <input type="text" id="cobro-persona" oninput="verificarMesesPagadosPersona()" required placeholder="Ej. Carlos Mendoza" class="mt-1 w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500">
+                            <p id="aviso-persona" class="text-xs text-amber-600 mt-1 hidden">⚠️ Meses previamente pagados aparecen deshabilitados y tachados para evitar duplicidad.</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-slate-700">Tipo de Cobro</label>
+                            <select id="cobro-tipo" onchange="actualizarMontoSugerido()" required class="mt-1 w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500"></select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-slate-700">Plazo Asignado / Fecha Límite de Pago</label>
+                            <input type="date" id="cobro-plazo" required class="mt-1 w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-slate-700 mb-1">Meses del año a cobrar:</label>
+                            <div class="grid grid-cols-3 gap-2 bg-slate-50 p-3 rounded-lg border border-slate-200" id="meses-checkboxes">
+                                <label class="flex items-center gap-2 cursor-pointer text-sm"><input type="checkbox" name="mes" value="Enero" onchange="actualizarMontoSugerido()"> Enero</label>
+                                <label class="flex items-center gap-2 cursor-pointer text-sm"><input type="checkbox" name="mes" value="Febrero" onchange="actualizarMontoSugerido()"> Febrero</label>
+                                <label class="flex items-center gap-2 cursor-pointer text-sm"><input type="checkbox" name="mes" value="Marzo" onchange="actualizarMontoSugerido()"> Marzo</label>
+                                <label class="flex items-center gap-2 cursor-pointer text-sm"><input type="checkbox" name="mes" value="Abril" onchange="actualizarMontoSugerido()"> Abril</label>
+                                <label class="flex items-center gap-2 cursor-pointer text-sm"><input type="checkbox" name="mes" value="Mayo" onchange="actualizarMontoSugerido()"> Mayo</label>
+                                <label class="flex items-center gap-2 cursor-pointer text-sm"><input type="checkbox" name="mes" value="Junio" onchange="actualizarMontoSugerido()"> Junio</label>
+                                <label class="flex items-center gap-2 cursor-pointer text-sm"><input type="checkbox" name="mes" value="Julio" onchange="actualizarMontoSugerido()"> Julio</label>
+                                <label class="flex items-center gap-2 cursor-pointer text-sm"><input type="checkbox" name="mes" value="Agosto" onchange="actualizarMontoSugerido()"> Agosto</label>
+                                <label class="flex items-center gap-2 cursor-pointer text-sm"><input type="checkbox" name="mes" value="Septiembre" onchange="actualizarMontoSugerido()"> Septiembre</label>
+                                <label class="flex items-center gap-2 cursor-pointer text-sm"><input type="checkbox" name="mes" value="Octubre" onchange="actualizarMontoSugerido()"> Octubre</label>
+                                <label class="flex items-center gap-2 cursor-pointer text-sm"><input type="checkbox" name="mes" value="Noviembre" onchange="actualizarMontoSugerido()"> Noviembre</label>
+                                <label class="flex items-center gap-2 cursor-pointer text-sm"><input type="checkbox" name="mes" value="Diciembre" onchange="actualizarMontoSugerido()"> Diciembre</label>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-slate-700">Monto Total a Cobrar (<span class="simbolo-moneda">Q</span>)</label>
+                            <input type="number" step="0.01" id="cobro-monto" required class="mt-1 w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                        <button type="submit" class="w-full bg-indigo-700 text-white py-2.5 rounded-lg font-medium hover:bg-indigo-800 transition shadow-sm">Guardar y Generar Recibo</button>
+                    </form>
+                </div>
+
+                <!-- Recibo imprimible -->
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-between">
+                    <div>
+                        <h2 class="text-xl font-semibold mb-4 text-indigo-700">Vista Previa del Recibo / Ticket</h2>
+                        <div id="printable-area" class="bg-slate-50 p-6 rounded-lg border border-dashed border-slate-300 font-mono text-sm space-y-2">
+                            <div class="text-center font-bold text-base">COMPROBANTE DE PAGO</div>
+                            <div class="text-center text-xs text-slate-500">Fecha: <span id="recibo-fecha">-</span></div>
+                            <hr class="border-slate-300 my-2">
+                            <div><strong>Recibo No:</strong> <span id="recibo-id">-</span></div>
+                            <div><strong>Cliente:</strong> <span id="recibo-persona">-</span></div>
+                            <div><strong>Concepto:</strong> <span id="recibo-tipo">-</span></div>
+                            <div><strong>Meses Cancelados:</strong> <span id="recibo-meses">-</span></div>
+                            <div><strong>Plazo Límite:</strong> <span id="recibo-plazo">-</span></div>
+                            <div><strong>Cobrado por:</strong> <span id="recibo-usuario">-</span></div>
+                            <hr class="border-slate-300 my-2">
+                            <div class="flex justify-between font-bold text-base">
+                                <span>TOTAL PAGADO:</span>
+                                <span id="recibo-monto">0.00</span>
+                            </div>
+                            <div class="text-center text-xs text-slate-400 mt-4">¡Gracias por su pago!</div>
+                        </div>
+                    </div>
+                    <div class="mt-6 flex gap-4 no-print">
+                        <button onclick="imprimirArea('normal')" class="flex-1 bg-slate-800 text-white py-2 rounded-lg font-medium hover:bg-slate-700 transition">Impresora Normal</button>
+                        <button onclick="imprimirArea('termica')" class="flex-1 bg-teal-600 text-white py-2 rounded-lg font-medium hover:bg-teal-700 transition">Impresora Térmica</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- SECCIÓN 2: ESTADO DE CUENTA INDIVIDUAL -->
+        <section id="tab-estado-cuenta" class="tab-content hidden space-y-6">
+            <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                <h2 class="text-xl font-semibold mb-4 text-indigo-700">Consultar Estado de Cuenta por Cliente</h2>
+                <div class="flex gap-4 mb-6 no-print">
+                    <input type="text" id="buscar-cliente" placeholder="Escriba el nombre exacto de la persona" class="flex-1 p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500">
+                    <button onclick="generarEstadoCuenta()" class="bg-indigo-700 text-white px-6 py-2 rounded-lg font-medium hover:bg-indigo-800 transition">Consultar Estado</button>
+                </div>
+
+                <div id="contenedor-estado-cuenta" class="bg-slate-50 p-6 rounded-xl border border-slate-200 hidden">
+                    <div class="flex justify-between items-center border-b pb-4 mb-4">
+                        <div>
+                            <h3 class="text-2xl font-bold text-slate-800" id="ec-cliente-nombre">-</h3>
+                            <p class="text-xs text-slate-500">Estado de cuenta detallado de cuotas mensuales</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-sm font-medium text-slate-600">Total Abonado / Pagado</p>
+                            <p class="text-2xl font-bold text-emerald-600" id="ec-total-abonado">0.00</p>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                        <div>
+                            <h4 class="font-semibold text-slate-700 mb-2">Meses Cancelados:</h4>
+                            <div id="ec-meses-pagados-tags" class="flex flex-wrap gap-2"></div>
+                        </div>
+                        <div>
+                            <h4 class="font-semibold text-slate-700 mb-2">Meses Pendientes:</h4>
+                            <div id="ec-meses-pendientes-tags" class="flex flex-wrap gap-2"></div>
+                        </div>
+                    </div>
+
+                    <h4 class="font-semibold text-slate-700 mb-2">Historial de Transacciones del Cliente:</h4>
+                    <table class="w-full text-left border-collapse text-sm bg-white rounded-lg overflow-hidden border border-slate-200">
+                        <thead>
+                            <tr class="bg-slate-100 text-slate-600">
+                                <th class="p-2.5">Fecha</th>
+                                <th class="p-2.5">Recibo</th>
+                                <th class="p-2.5">Concepto</th>
+                                <th class="p-2.5">Meses</th>
+                                <th class="p-2.5">Cajero</th>
+                                <th class="p-2.5 text-right">Monto</th>
+                            </tr>
+                        </thead>
+                        <tbody id="ec-tabla-body" class="divide-y divide-slate-100"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- SECCIÓN 3: CONTROL DE EGRESOS Y FONDO DE CAJA -->
+        <section id="tab-egresos" class="tab-content hidden space-y-6">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 lg:col-span-1">
+                    <h2 class="text-xl font-semibold mb-4 text-indigo-700">Registrar Egreso / Salida de Caja</h2>
+                    <form id="form-egreso" onsubmit="registrarEgreso(event)" class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-slate-700">Seleccionar o escribir concepto</label>
+                            <select id="egreso-select-concepto" onchange="document.getElementById('egreso-concepto').value = this.value;" class="mt-1 w-full p-2 border border-slate-300 rounded-lg mb-2"></select>
+                            <input type="text" id="egreso-concepto" required placeholder="Nombre del gasto" class="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-slate-700">Monto del Egreso (<span class="simbolo-moneda">Q</span>)</label>
+                            <input type="number" step="0.01" id="egreso-monto" required class="mt-1 w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                        <button type="submit" class="w-full bg-rose-600 text-white py-2 rounded-lg font-medium hover:bg-rose-700 transition">Registrar Egreso</button>
+                    </form>
+                </div>
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 lg:col-span-2">
+                    <h2 class="text-xl font-semibold mb-4 text-indigo-700">Historial de Egresos</h2>
+                    <table class="w-full text-left border-collapse text-sm">
+                        <thead>
+                            <tr class="bg-slate-100 text-slate-600">
+                                <th class="p-3">Fecha</th>
+                                <th class="p-3">Concepto</th>
+                                <th class="p-3">Registrado por</th>
+                                <th class="p-3 text-right">Monto</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tabla-egresos-body" class="divide-y divide-slate-200"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- SECCIÓN 4: REPORTES FINANCIEROS Y EXCEL -->
+        <section id="tab-reportes" class="tab-content hidden space-y-6">
+            <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col sm:flex-row justify-between items-center gap-4">
+                <div>
+                    <h2 class="text-xl font-semibold text-indigo-700">Reportes Financieros Consolidados</h2>
+                    <p class="text-xs text-slate-500">Resumen de ingresos, egresos y exportación de respaldos.</p>
+                </div>
+                <button onclick="exportarExcel()" class="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-emerald-700 transition flex items-center gap-2">📥 Exportar Backup a Excel (CSV)</button>
+            </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div class="bg-emerald-50 border border-emerald-200 p-6 rounded-xl">
+                    <h3 class="text-emerald-800 font-medium">Total Ingresos</h3>
+                    <p id="reporte-total-ingresos" class="text-3xl font-bold text-emerald-600 mt-2">0.00</p>
+                </div>
+                <div class="bg-rose-50 border border-rose-200 p-6 rounded-xl">
+                    <h3 class="text-rose-800 font-medium">Total Egresos</h3>
+                    <p id="reporte-total-egresos" class="text-3xl font-bold text-rose-600 mt-2">0.00</p>
+                </div>
+                <div class="bg-indigo-50 border border-indigo-200 p-6 rounded-xl">
+                    <h3 class="text-indigo-800 font-medium">Balance en Caja Chica</h3>
+                    <p id="reporte-balance" class="text-3xl font-bold text-indigo-700 mt-2">0.00</p>
+                </div>
+            </div>
+
+            <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                <h3 class="text-lg font-semibold mb-4 text-slate-800">Registro Consolidado de Ingresos</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse text-sm">
+                        <thead>
+                            <tr class="bg-slate-100 text-slate-600">
+                                <th class="p-3">Recibo</th>
+                                <th class="p-3">Fecha</th>
+                                <th class="p-3">Cliente</th>
+                                <th class="p-3">Tipo</th>
+                                <th class="p-3">Meses</th>
+                                <th class="p-3">Plazo</th>
+                                <th class="p-3">Cajero</th>
+                                <th class="p-3 text-right">Monto</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tabla-reportes-body" class="divide-y divide-slate-200"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- SECCIÓN 5: CONFIGURACIÓN, GESTIÓN DE USUARIOS Y LIMPIEZA DE DATOS -->
+        <section id="tab-config" class="tab-content hidden space-y-6">
+            
+            <!-- Gestión de los 5 Usuarios Autorizados -->
+            <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                <h2 class="text-xl font-semibold mb-2 text-indigo-700">👥 Gestión de los 5 Usuarios del Sistema</h2>
+                <p class="text-xs text-slate-500 mb-4">Personalice los nombres y claves de acceso para los 5 usuarios autorizados que operarán la plataforma.</p>
+                <div class="grid grid-cols-1 md:grid-cols-5 gap-4" id="contenedor-usuarios-config">
+                    <!-- Se renderiza dinámicamente -->
+                </div>
+                <div class="mt-4 flex justify-end">
+                    <button onclick="guardarUsuariosConfig()" class="bg-indigo-700 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-indigo-800 transition">Guardar Usuarios y Claves</button>
+                </div>
+            </div>
+
+            <!-- Opción de Limpieza de Datos para Reutilización -->
+            <div class="bg-rose-50 border border-rose-200 p-6 rounded-xl">
+                <h2 class="text-xl font-semibold mb-2 text-rose-800">🗑️ Limpieza y Reinicio de Datos del Sistema</h2>
+                <p class="text-xs text-rose-600 mb-4">Esta opción limpia completamente todos los registros financieros (cobros y egresos), permitiendo reutilizar el sistema desde cero para un nuevo ciclo o periodo de cobros. (La configuración de moneda y usuarios se mantiene).</p>
+                <button onclick="limpiarDatosSistema()" class="bg-rose-600 text-white px-5 py-2.5 rounded-lg text-sm font-medium hover:bg-rose-700 transition shadow-sm">Limpiar Datos y Reiniciar Sistema</button>
+            </div>
+
+            <!-- Selector de Moneda del País -->
+            <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                <h2 class="text-xl font-semibold mb-2 text-indigo-700">🌍 Moneda del País</h2>
+                <p class="text-xs text-slate-500 mb-4">Selecciona el tipo de moneda acorde a tu país. Toda la plataforma, recibos y reportes se actualizarán con este símbolo.</p>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">País / Moneda Predeterminada</label>
+                        <select id="select-moneda-pais" onchange="cambiarMonedaPais(this.value)" class="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500">
+                            <option value="GTQ">Guatemala (Quetzal - Q)</option>
+                            <option value="MXN">México (Peso Mex - $)</option>
+                            <option value="USD">Estados Unidos / Ecuador / El Salvador (Dólar - $)</option>
+                            <option value="COP">Colombia (Peso Col - $)</option>
+                            <option value="PEN">Perú (Sol - S/)</option>
+                            <option value="EUR">España / Unión Europea (Euro - €)</option>
+                            <option value="HNL">Honduras (Lempira - L)</option>
+                            <option value="NIO">Nicaragua (Córdoba - C$)</option>
+                            <option value="CRC">Costa Rica (Colón - ₡)</option>
+                            <option value="ARS">Argentina (Peso Arg - $)</option>
+                            <option value="CLP">Chile (Peso Chileno - $)</option>
+                            <option value="CUSTOM">Otro (Símbolo personalizado)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Símbolo Visual</label>
+                        <input type="text" id="input-simbolo-moneda" oninput="guardarSimboloPersonalizado(this.value)" placeholder="Ej. Q, $, S/, €" class="w-full p-2 border border-slate-300 rounded-lg bg-slate-50 font-bold text-indigo-700">
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <!-- Configuración de Tipos de Cobro -->
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                    <h2 class="text-xl font-semibold mb-4 text-indigo-700">Tipos de Cobro / Tarifas</h2>
+                    <form id="form-tipo-cobro" onsubmit="agregarTipoCobro(event)" class="space-y-4">
+                        <input type="text" id="tipo-nombre" placeholder="Nombre (ej. Cuota Mensual Estándar)" required class="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500">
+                        <input type="number" step="0.01" id="tipo-monto" placeholder="Monto Base" required class="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500">
+                        <button type="submit" class="bg-indigo-700 text-white px-4 py-2 rounded-lg font-medium hover:bg-indigo-800 transition">Añadir Tipo de Cobro</button>
+                    </form>
+                    <ul id="lista-tipos-cobro" class="mt-4 divide-y border rounded-lg p-2 bg-slate-50"></ul>
+                </div>
+
+                <!-- Configuración de Nombres de Egresos Frecuentes -->
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                    <h2 class="text-xl font-semibold mb-4 text-indigo-700">Nombres de Gastos Frecuentes</h2>
+                    <form id="form-concepto-gasto" onsubmit="agregarConceptoGasto(event)" class="space-y-4">
+                        <input type="text" id="nuevo-concepto-gasto" placeholder="Nombre de gasto (ej. Servicio de Agua, Papelería)" required class="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500">
+                        <button type="submit" class="bg-slate-800 text-white px-4 py-2 rounded-lg font-medium hover:bg-slate-700 transition">Guardar Gasto Frecuente</button>
+                    </form>
+                    <ul id="lista-conceptos-gasto" class="mt-4 divide-y border rounded-lg p-2 bg-slate-50"></ul>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <script>
+        // CLIENT_ID opcional para la API de Google Drive OAuth2
+        const CLIENT_ID = 'TU_CLIENT_ID_DE_GOOGLE.apps.googleusercontent.com';
+        const SCOPES = 'https://www.googleapis.com/auth/drive.file';
+        let tokenClient;
+        let accessToken = null;
+        let usuarioActual = null;
+
+        // Recuperar Datos Almacenados en LocalStorage (Persistencia Automática)
+        let configMoneda = JSON.parse(localStorage.getItem('config_moneda')) || { codigo: 'GTQ', simbolo: 'Q' };
+        
+        let usuariosSistema = JSON.parse(localStorage.getItem('usuarios_sistema')) || [
+            { nombre: 'Administrador', clave: '1234' },
+            { nombre: 'Cajero 1', clave: '1111' },
+            { nombre: 'Cajero 2', clave: '2222' },
+            { nombre: 'Supervisor', clave: '3333' },
+            { nombre: 'Auxiliar', clave: '4444' }
+        ];
+
+        let tiposCobro = JSON.parse(localStorage.getItem('tipos_cobro')) || [
+            { id: 1, nombre: 'Cuota Mensual Estándar', monto: 100.00 }
+        ];
+        let conceptosEgresos = JSON.parse(localStorage.getItem('conceptos_egresos')) || [
+            'Pago Energía Eléctrica', 'Materiales de Oficina', 'Mantenimiento General'
+        ];
+        let ingresos = JSON.parse(localStorage.getItem('ingresos')) || [];
+        let egresos = JSON.parse(localStorage.getItem('egresos')) || [];
+
+        const TODOS_LOS_MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+
+        const MAPA_MONEDAS = {
+            'GTQ': 'Q', 'MXN': '$', 'USD': '$', 'COP': '$', 'PEN': 'S/',
+            'EUR': '€', 'HNL': 'L', 'NIO': 'C$', 'CRC': '₡', 'ARS': '$', 'CLP': '$'
+        };
+
+        function guardarDatosLocalmente() {
+            localStorage.setItem('config_moneda', JSON.stringify(configMoneda));
+            localStorage.setItem('usuarios_sistema', JSON.stringify(usuariosSistema));
+            localStorage.setItem('tipos_cobro', JSON.stringify(tiposCobro));
+            localStorage.setItem('conceptos_egresos', JSON.stringify(conceptosEgresos));
+            localStorage.setItem('ingresos', JSON.stringify(ingresos));
+            localStorage.setItem('egresos', JSON.stringify(egresos));
+        }
+
+        // SISTEMA DE 5 USUARIOS Y LOGIN
+        function renderLoginSelect() {
+            const select = document.getElementById('login-usuario-idx');
+            select.innerHTML = '';
+            usuariosSistema.forEach((u, index) => {
+                select.innerHTML += `<option value="${index}">${u.nombre}</option>`;
+            });
+        }
+
+        function renderUsuariosConfig() {
+            const contenedor = document.getElementById('contenedor-usuarios-config');
+            contenedor.innerHTML = '';
+            usuariosSistema.forEach((u, index) => {
+                contenedor.innerHTML += `
+                    <div class="bg-slate-50 p-3 rounded-lg border border-slate-200 space-y-2">
+                        <label class="block text-xs font-bold text-slate-700">Usuario #${index + 1}</label>
+                        <input type="text" id="cfg-user-nombre-${index}" value="${u.nombre}" placeholder="Nombre" class="w-full p-1.5 border border-slate-300 rounded text-xs">
+                        <input type="text" id="cfg-user-clave-${index}" value="${u.clave}" placeholder="Clave" class="w-full p-1.5 border border-slate-300 rounded text-xs font-mono">
+                    </div>
+                `;
+            });
+        }
+
+        function guardarUsuariosConfig() {
+            for (let i = 0; i < 5; i++) {
+                const nombre = document.getElementById(`cfg-user-nombre-${i}`).value.trim();
+                const clave = document.getElementById(`cfg-user-clave-${i}`).value.trim();
+                if(nombre && clave) {
+                    usuariosSistema[i] = { nombre, clave };
+                }
+            }
+            guardarDatosLocalmente();
+            renderLoginSelect();
+            alert('¡Usuarios y claves actualizados correctamente!');
+        }
+
+        function iniciarSesion(e) {
+            e.preventDefault();
+            const idx = document.getElementById('login-usuario-idx').value;
+            const claveIngresada = document.getElementById('login-password').value;
+
+            if (usuariosSistema[idx].clave === claveIngresada) {
+                usuarioActual = usuariosSistema[idx].nombre;
+                document.getElementById('badge-usuario-activo').innerText = `Usuario: ${usuarioActual}`;
+                document.getElementById('login-overlay').classList.add('hidden');
+                document.getElementById('login-password').value = '';
+            } else {
+                alert('Clave incorrecta. Intente nuevamente.');
+            }
+        }
+
+        function cerrarSesion() {
+            usuarioActual = null;
+            document.getElementById('login-overlay').classList.remove('hidden');
+            renderLoginSelect();
+        }
+
+        // OPCIÓN DE LIMPIEZA DE DATOS
+        function limpiarDatosSistema() {
+            if (confirm("⚠️ ¿Está completamente seguro de limpiar todos los registros de cobros, egresos y clientes? Esta acción vaciará el sistema para iniciar un nuevo periodo y no se puede deshacer.")) {
+                ingresos = [];
+                egresos = [];
+                guardarDatosLocalmente();
+                init();
+                alert('¡Sistema limpiado con éxito! Listo para nuevos registros.');
+            }
+        }
+
+        // CONTROL DE MONEDA
+        function aplicarMonedaEnPantalla() {
+            document.querySelectorAll('.simbolo-moneda').forEach(el => el.innerText = configMoneda.simbolo);
+            document.getElementById('input-simbolo-moneda').value = configMoneda.simbolo;
+            document.getElementById('select-moneda-pais').value = MAPA_MONEDAS[configMoneda.codigo] ? configMoneda.codigo : 'CUSTOM';
+            document.getElementById('moneda-activa-tag').innerText = `${configMoneda.simbolo} (${configMoneda.codigo})`;
+            renderTiposCobro();
+            actualizarReportes();
+            if(ingresos.length > 0) mostrarReciboEnPantalla(ingresos[0]);
+        }
+
+        function cambiarMonedaPais(codigo) {
+            if(codigo === 'CUSTOM') {
+                configMoneda.codigo = 'CUSTOM';
+            } else {
+                configMoneda.codigo = codigo;
+                configMoneda.simbolo = MAPA_MONEDAS[codigo] || '$';
+            }
+            guardarDatosLocalmente();
+            aplicarMonedaEnPantalla();
+        }
+
+        function guardarSimboloPersonalizado(simbolo) {
+            configMoneda.simbolo = simbolo || '$';
+            guardarDatosLocalmente();
+            document.querySelectorAll('.simbolo-moneda').forEach(el => el.innerText = configMoneda.simbolo);
+            document.getElementById('moneda-activa-tag').innerText = `${configMoneda.simbolo} (${configMoneda.codigo})`;
+        }
+
+        function formatearMonto(monto) {
+            return `${configMoneda.simbolo}${parseFloat(monto).toFixed(2)}`;
+        }
+
+        function switchTab(tabId) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+            document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('bg-indigo-900'));
+            document.getElementById(`tab-${tabId}`).classList.remove('hidden');
+            event.target.classList.add('bg-indigo-900');
+            if(tabId === 'reportes') actualizarReportes();
+        }
+
+        function init() {
+            renderLoginSelect();
+            renderUsuariosConfig();
+            aplicarMonedaEnPantalla();
+            renderConceptosEgresos();
+            renderEgresos();
+            actualizarReportes();
+        }
+
+        // CONEXIÓN OAUTH CON GOOGLE DRIVE API
+        function autenticarGoogleDrive() {
+            if (CLIENT_ID.includes('TU_CLIENT_ID')) {
+                alert("Las funciones de respaldo local y exportación a Excel funcionan de forma 100% libre. Si deseas habilitar la API directa de Google Drive en tiempo real, debes añadir tu Client ID de Google Cloud.");
+                return;
+            }
+            tokenClient = google.accounts.oauth2.initTokenClient({
+                client_id: CLIENT_ID,
+                scope: SCOPES,
+                callback: (tokenResponse) => {
+                    accessToken = tokenResponse.access_token;
+                    document.getElementById('drive-status-text').innerText = "Google Drive Conectado";
+                    document.getElementById('drive-user-text').innerText = "Sincronización lista para guardar en la Nube.";
+                    document.getElementById('btn-connect-drive').classList.add('hidden');
+                    document.getElementById('btn-sync-drive').classList.remove('hidden');
+                },
+            });
+            tokenClient.requestAccessToken();
+        }
+
+        async function sincronizarConDrive() {
+            if (!accessToken) return;
+            const backupData = { configMoneda, usuariosSistema, tiposCobro, conceptosEgresos, ingresos, egresos, fechaRespaldo: new Date().toISOString() };
+            const fileContent = JSON.stringify(backupData, null, 2);
+            
+            const file = new Blob([fileContent], { type: 'application/json' });
+            const metadata = { name: 'respaldo_sistema_cobros.json', mimeType: 'application/json' };
+
+            const form = new FormData();
+            form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+            form.append('file', file);
+
+            try {
+                const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+                    method: 'POST',
+                    headers: new Headers({ 'Authorization': 'Bearer ' + accessToken }),
+                    body: form
+                });
+                if(res.ok) alert("¡Respaldo guardado exitosamente en tu Google Drive!");
+            } catch (err) {
+                console.error("Error al guardar en Google Drive:", err);
+            }
+        }
+
+        // MÓDULO COBROS Y CONTROL ANTI-DUPLICIDAD
+        function renderTiposCobro() {
+            const select = document.getElementById('cobro-tipo');
+            const lista = document.getElementById('lista-tipos-cobro');
+            select.innerHTML = ''; lista.innerHTML = '';
+            tiposCobro.forEach(t => {
+                select.innerHTML += `<option value="${t.nombre}" data-monto="${t.monto}">${t.nombre} (${formatearMonto(t.monto)})</option>`;
+                lista.innerHTML += `<li class="py-2 flex justify-between text-sm"><span>${t.nombre}</span><b>${formatearMonto(t.monto)}</b></li>`;
+            });
+            actualizarMontoSugerido();
+        }
+
+        function renderConceptosEgresos() {
+            const select = document.getElementById('egreso-select-concepto');
+            const lista = document.getElementById('lista-conceptos-gasto');
+            select.innerHTML = '<option value="">-- Seleccionar gasto frecuente --</option>'; lista.innerHTML = '';
+            conceptosEgresos.forEach(c => {
+                select.innerHTML += `<option value="${c}">${c}</option>`;
+                lista.innerHTML += `<li class="py-2 text-sm">${c}</li>`;
+            });
+        }
+
+        function verificarMesesPagadosPersona() {
+            const personaInput = document.getElementById('cobro-persona').value.trim().toLowerCase();
+            const checkboxes = document.querySelectorAll('input[name="mes"]');
+            const aviso = document.getElementById('aviso-persona');
+
+            checkboxes.forEach(cb => { cb.disabled = false; cb.checked = false; cb.parentElement.classList.remove('text-slate-400', 'line-through'); });
+            aviso.classList.add('hidden');
+            if (!personaInput) return;
+
+            let mesesPagadosSet = new Set();
+            ingresos.forEach(ing => {
+                if (ing.persona.trim().toLowerCase() === personaInput && ing.meses) {
+                    ing.meses.split(', ').forEach(m => mesesPagadosSet.add(m));
+                }
+            });
+
+            if (mesesPagadosSet.size > 0) {
+                aviso.classList.remove('hidden');
+                checkboxes.forEach(cb => {
+                    if (mesesPagadosSet.has(cb.value)) {
+                        cb.disabled = true;
+                        cb.parentElement.classList.add('text-slate-400', 'line-through');
+                    }
+                });
+            }
+            actualizarMontoSugerido();
+        }
+
+        function actualizarMontoSugerido() {
+            const select = document.getElementById('cobro-tipo');
+            const selectedOption = select.options[select.selectedIndex];
+            if (selectedOption) {
+                const montoBase = parseFloat(selectedOption.getAttribute('data-monto')) || 0;
+                const mesesSeleccionados = document.querySelectorAll('input[name="mes"]:checked').length;
+                document.getElementById('cobro-monto').value = (montoBase * (mesesSeleccionados || 1)).toFixed(2);
+            }
+        }
+
+        function registrarCobro(e) {
+            e.preventDefault();
+            const persona = document.getElementById('cobro-persona').value;
+            const tipo = document.getElementById('cobro-tipo').value;
+            const monto = parseFloat(document.getElementById('cobro-monto').value);
+            const plazo = document.getElementById('cobro-plazo').value || 'Sin plazo';
+            const mesesChecked = Array.from(document.querySelectorAll('input[name="mes"]:checked')).map(el => el.value);
+
+            if (mesesChecked.length === 0) { alert('Seleccione al menos un mes a pagar.'); return; }
+
+            const nuevoIngreso = {
+                id: 'REC-' + Math.floor(100000 + Math.random() * 900000),
+                fecha: new Date().toLocaleString(),
+                persona, tipo, meses: mesesChecked.join(', '), plazo, monto,
+                cajero: usuarioActual || 'Sistema'
+            };
+
+            ingresos.unshift(nuevoIngreso);
+            guardarDatosLocalmente();
+            mostrarReciboEnPantalla(nuevoIngreso);
+            document.getElementById('form-cobro').reset();
+            verificarMesesPagadosPersona();
+            alert('¡Cobro guardado y registrado correctamente!');
+        }
+
+        function mostrarReciboEnPantalla(ing) {
+            document.getElementById('recibo-id').innerText = ing.id;
+            document.getElementById('recibo-fecha').innerText = ing.fecha;
+            document.getElementById('recibo-persona').innerText = ing.persona;
+            document.getElementById('recibo-tipo').innerText = ing.tipo;
+            document.getElementById('recibo-meses').innerText = ing.meses;
+            document.getElementById('recibo-plazo').innerText = ing.plazo;
+            document.getElementById('recibo-usuario').innerText = ing.cajero || 'Sistema';
+            document.getElementById('recibo-monto').innerText = formatearMonto(ing.monto);
+        }
+
+        // MÓDULO ESTADO DE CUENTA
+        function generarEstadoCuenta() {
+            const cliente = document.getElementById('buscar-cliente').value.trim().toLowerCase();
+            const contenedor = document.getElementById('contenedor-estado-cuenta');
+            if(!cliente) { alert('Ingrese el nombre de la persona a consultar.'); return; }
+
+            const pagosCliente = ingresos.filter(i => i.persona.toLowerCase() === cliente);
+            if(pagosCliente.length === 0) { alert('No existen registros asociados a esta persona.'); contenedor.classList.add('hidden'); return; }
+
+            contenedor.classList.remove('hidden');
+            document.getElementById('ec-cliente-nombre').innerText = pagosCliente[0].persona;
+
+            let mesesPagadosSet = new Set();
+            let totalAbonado = 0;
+            const tbody = document.getElementById('ec-tabla-body');
+            tbody.innerHTML = '';
+
+            pagosCliente.forEach(p => {
+                totalAbonado += p.monto;
+                p.meses.split(', ').forEach(m => mesesPagadosSet.add(m));
+                tbody.innerHTML += `<tr><td class="p-2.5">${p.fecha}</td><td class="p-2.5 font-mono text-xs">${p.id}</td><td class="p-2.5">${p.tipo}</td><td class="p-2.5 font-medium">${p.meses}</td><td class="p-2.5 text-xs text-slate-500">${p.cajero || 'Sistema'}</td><td class="p-2.5 text-right font-bold text-emerald-600">${formatearMonto(p.monto)}</td></tr>`;
+            });
+
+            document.getElementById('ec-total-abonado').innerText = formatearMonto(totalAbonado);
+
+            const divPagados = document.getElementById('ec-meses-pagados-tags');
+            const divPendientes = document.getElementById('ec-meses-pendientes-tags');
+            divPagados.innerHTML = ''; divPendientes.innerHTML = '';
+
+            TODOS_LOS_MESES.forEach(mes => {
+                if(mesesPagadosSet.has(mes)) {
+                    divPagados.innerHTML += `<span class="bg-emerald-100 text-emerald-800 text-xs px-2.5 py-1 rounded-full font-medium">✓ ${mes}</span>`;
+                } else {
+                    divPendientes.innerHTML += `<span class="bg-rose-100 text-rose-800 text-xs px-2.5 py-1 rounded-full font-medium">✗ ${mes}</span>`;
+                }
+            });
+        }
+
+        // EGRESOS Y REPORTES
+        function registrarEgreso(e) {
+            e.preventDefault();
+            const concepto = document.getElementById('egreso-concepto').value;
+            const monto = parseFloat(document.getElementById('egreso-monto').value);
+            egresos.unshift({ 
+                id: Date.now(), 
+                fecha: new Date().toLocaleDateString(), 
+                concepto, 
+                monto,
+                cajero: usuarioActual || 'Sistema'
+            });
+            guardarDatosLocalmente();
+            renderEgresos();
+            document.getElementById('form-egreso').reset();
+            alert('Egreso registrado correctamente.');
+        }
+
+        function renderEgresos() {
+            const tbody = document.getElementById('tabla-egresos-body');
+            tbody.innerHTML = '';
+            egresos.forEach(e => {
+                tbody.innerHTML += `<tr><td class="p-3">${e.fecha}</td><td class="p-3">${e.concepto}</td><td class="p-3 text-xs text-slate-500">${e.cajero || 'Sistema'}</td><td class="p-3 text-right text-rose-600 font-medium">-${formatearMonto(e.monto)}</td></tr>`;
+            });
+        }
+
+        function actualizarReportes() {
+            const totalIngresos = ingresos.reduce((a, b) => a + b.monto, 0);
+            const totalEgresos = egresos.reduce((a, b) => a + b.monto, 0);
+            document.getElementById('reporte-total-ingresos').innerText = formatearMonto(totalIngresos);
+            document.getElementById('reporte-total-egresos').innerText = formatearMonto(totalEgresos);
+            document.getElementById('reporte-balance').innerText = formatearMonto(totalIngresos - totalEgresos);
+
+            const tbody = document.getElementById('tabla-reportes-body');
+            tbody.innerHTML = '';
+            ingresos.forEach(i => {
+                tbody.innerHTML += `<tr><td class="p-3 font-mono text-xs">${i.id}</td><td class="p-3">${i.fecha}</td><td class="p-3">${i.persona}</td><td class="p-3">${i.tipo}</td><td class="p-3 text-indigo-700 font-medium">${i.meses}</td><td class="p-3">${i.plazo}</td><td class="p-3 text-xs text-slate-500">${i.cajero || 'Sistema'}</td><td class="p-3 text-right text-emerald-600 font-medium">+${formatearMonto(i.monto)}</td></tr>`;
+            });
+        }
+
+        function agregarTipoCobro(e) {
+            e.preventDefault();
+            tiposCobro.push({ id: Date.now(), nombre: document.getElementById('tipo-nombre').value, monto: parseFloat(document.getElementById('tipo-monto').value) });
+            guardarDatosLocalmente(); renderTiposCobro(); document.getElementById('form-tipo-cobro').reset();
+        }
+
+        function agregarConceptoGasto(e) {
+            e.preventDefault();
+            const c = document.getElementById('nuevo-concepto-gasto').value;
+            if(!conceptosEgresos.includes(c)) { conceptosEgresos.push(c); guardarDatosLocalmente(); renderConceptosEgresos(); }
+            document.getElementById('form-concepto-gasto').reset();
+        }
+
+        function imprimirArea(tipo) {
+            if(tipo === 'termica') {
+                const content = document.getElementById('printable-area').innerHTML;
+                const win = window.open('', '', 'width=300,height=500');
+                win.document.write('<html><head><style>body{font-family:monospace;font-size:12px;width:200px;margin:0;padding:5px;}</style></head><body>' + content + '</body></html>');
+                win.document.close(); win.print();
+            } else {
+                window.print();
+            }
+        }
+
+        function exportarExcel() {
+            let csv = `data:text/csv;charset=utf-8,\uFEFFMONEDA CONFIGURADA: "${configMoneda.simbolo} (${configMoneda.codigo})"\n\nID RECIBO,FECHA,PERSONA,TIPO,MESES PAGADOS,PLAZO,CAJERO,MONTO INGRESO\n`;
+            ingresos.forEach(i => csv += `"${i.id}","${i.fecha}","${i.persona}","${i.tipo}","${i.meses}","${i.plazo}","${i.cajero || 'Sistema'}",${i.monto}\n`);
+            csv += "\nID,FECHA,CONCEPTO EGRESO,CAJERO,MONTO EGRESO\n";
+            egresos.forEach(e => csv += `"${e.id}","${e.fecha}","${e.concepto}","${e.cajero || 'Sistema'}",${e.monto}\n`);
+            const link = document.createElement("a");
+            link.href = encodeURI(csv);
+            link.download = "backup_financiero_cobros.csv";
+            link.click();
+        }
+
+        window.onload = init;
+    </script>
+</body>
+</html>
